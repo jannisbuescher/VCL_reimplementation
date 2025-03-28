@@ -7,15 +7,16 @@ import numpy as np
 from tqdm import tqdm
 import multiprocessing
 import os
+from functools import partial
 
 # Set multiprocessing start method to 'spawn' to avoid deadlocks
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from .model import VariationalMLP
-from .loss import variational_loss
-from .mnist_perm import create_data_loaders, convert_to_jax
+from model import VariationalMLP
+from loss import variational_loss
+from mnist_perm import create_data_loaders, convert_to_jax
 
 class TrainState(train_state.TrainState):
     """Training state for the variational model."""
@@ -40,30 +41,29 @@ def create_train_state(
         rng=rng
     )
 
-@jax.jit
+@partial(jax.jit, static_argnums=(2,))
 def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
-    num_samples: int = 10  # Increased default samples
+    num_samples: int = 10  # Samples for Monte Carlo estimation
 ) -> Tuple[TrainState, Dict]:
     """Single training step with Monte Carlo estimation."""
     images, labels = batch
     
     def loss_fn(params):
-        def sample_step(i, val):
-            logits_samples, metrics_samples = val
+        def sample_step(i, state_tuple):
+            logits_samples, metrics_samples, total_loss = state_tuple
             
             # Generate new RNG key for each sample
-            rng = jax.random.fold_in(state.rng, jax.random.PRNGKey(i))
+            rng = jax.random.PRNGKey(i)  # Use simple key instead of fold_in
             logits = state.apply_fn({'params': params}, images, rng)
             
             # Compute loss for each sample
-            _, metrics = variational_loss(
+            loss, metrics = variational_loss(
                 params=params,
                 prior_params=state.prior_params,
                 logits=logits,
                 labels=labels,
-                num_samples=1  # Single sample per forward pass
             )
             
             # Update samples
@@ -71,41 +71,34 @@ def train_step(
             metrics_samples = {k: metrics_samples[k].at[i].set(metrics[k]) 
                              for k in metrics_samples.keys()}
             
-            return logits_samples, metrics_samples
+            return (logits_samples, metrics_samples, total_loss + loss)
         
         # Initialize arrays for samples
-        logits_samples = jnp.zeros((num_samples,) + (images.shape[0], 10))  # 10 is num_classes
-        metrics_samples = {
-            'nll': jnp.zeros(num_samples),
-            'kl_div': jnp.zeros(num_samples),
-            'total_loss': jnp.zeros(num_samples)
-        }
+        init_state = (
+            jnp.zeros((num_samples, images.shape[0], 10)),  # logits_samples
+            {  # metrics_samples
+                'nll': jnp.zeros(num_samples),
+                'kl_div': jnp.zeros(num_samples),
+                'total_loss': jnp.zeros(num_samples)
+            },
+            0  # total_loss
+        )
         
         # Run Monte Carlo sampling
-        logits_samples, metrics_samples = jax.lax.fori_loop(
+        logits_samples, metrics_samples, total_loss = jax.lax.fori_loop(
             lower=0,
             upper=num_samples,
             body_fun=sample_step,
-            init_val=(logits_samples, metrics_samples)
+            init_val=init_state
         )
         
-        # Average logits and metrics across samples
-        avg_logits = jnp.mean(logits_samples, axis=0)
+        # Average metrics across samples
         avg_metrics = {
             k: jnp.mean(metrics_samples[k])
             for k in metrics_samples.keys()
         }
         
-        # Compute final loss with averaged logits
-        final_loss, _ = variational_loss(
-            params=params,
-            prior_params=state.prior_params,
-            logits=avg_logits,
-            labels=labels,
-            num_samples=1
-        )
-        
-        return final_loss, avg_metrics
+        return total_loss, avg_metrics
     
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (_, metrics), grads = grad_fn(state.params)

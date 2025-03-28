@@ -30,8 +30,7 @@ def variational_loss(
     params: Dict,
     prior_params: Dict,
     logits: jnp.ndarray,
-    labels: jnp.ndarray,
-    num_samples: int = 1
+    labels: jnp.ndarray
 ) -> Tuple[jnp.ndarray, Dict]:
     """
     Compute the variational loss: negative log likelihood + KL divergence.
