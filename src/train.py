@@ -44,21 +44,49 @@ def create_train_state(
 def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
-    num_samples: int = 1
+    num_samples: int = 10  # Increased default samples
 ) -> Tuple[TrainState, Dict]:
-    """Single training step."""
+    """Single training step with Monte Carlo estimation."""
     images, labels = batch
     
     def loss_fn(params):
-        logits = state.apply_fn({'params': params}, images, state.rng)
-        loss, metrics = variational_loss(
+        # Multiple forward passes
+        logits_samples = []
+        metrics_samples = []
+        
+        for _ in range(num_samples):
+            # Generate new RNG key for each sample
+            rng = jax.random.fold_in(state.rng, jax.random.PRNGKey(0))
+            logits = state.apply_fn({'params': params}, images, rng)
+            logits_samples.append(logits)
+            
+            # Compute loss for each sample
+            _, metrics = variational_loss(
+                params=params,
+                prior_params=state.prior_params,
+                logits=logits,
+                labels=labels,
+                num_samples=1  # Single sample per forward pass
+            )
+            metrics_samples.append(metrics)
+        
+        # Average logits and metrics across samples
+        avg_logits = jnp.mean(jnp.stack(logits_samples), axis=0)
+        avg_metrics = {
+            k: jnp.mean(jnp.stack([m[k] for m in metrics_samples]))
+            for k in metrics_samples[0].keys()
+        }
+        
+        # Compute final loss with averaged logits
+        final_loss, _ = variational_loss(
             params=params,
             prior_params=state.prior_params,
-            logits=logits,
+            logits=avg_logits,
             labels=labels,
-            num_samples=num_samples
+            num_samples=1
         )
-        return loss, metrics
+        
+        return final_loss, avg_metrics
     
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (_, metrics), grads = grad_fn(state.params)
