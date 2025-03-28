@@ -50,15 +50,12 @@ def train_step(
     images, labels = batch
     
     def loss_fn(params):
-        # Multiple forward passes
-        logits_samples = []
-        metrics_samples = []
-        
-        for _ in range(num_samples):
+        def sample_step(i, val):
+            logits_samples, metrics_samples = val
+            
             # Generate new RNG key for each sample
-            rng = jax.random.fold_in(state.rng, jax.random.PRNGKey(0))
+            rng = jax.random.fold_in(state.rng, jax.random.PRNGKey(i))
             logits = state.apply_fn({'params': params}, images, rng)
-            logits_samples.append(logits)
             
             # Compute loss for each sample
             _, metrics = variational_loss(
@@ -68,13 +65,35 @@ def train_step(
                 labels=labels,
                 num_samples=1  # Single sample per forward pass
             )
-            metrics_samples.append(metrics)
+            
+            # Update samples
+            logits_samples = logits_samples.at[i].set(logits)
+            metrics_samples = {k: metrics_samples[k].at[i].set(metrics[k]) 
+                             for k in metrics_samples.keys()}
+            
+            return logits_samples, metrics_samples
+        
+        # Initialize arrays for samples
+        logits_samples = jnp.zeros((num_samples,) + (images.shape[0], 10))  # 10 is num_classes
+        metrics_samples = {
+            'nll': jnp.zeros(num_samples),
+            'kl_div': jnp.zeros(num_samples),
+            'total_loss': jnp.zeros(num_samples)
+        }
+        
+        # Run Monte Carlo sampling
+        logits_samples, metrics_samples = jax.lax.fori_loop(
+            lower=0,
+            upper=num_samples,
+            body_fun=sample_step,
+            init_val=(logits_samples, metrics_samples)
+        )
         
         # Average logits and metrics across samples
-        avg_logits = jnp.mean(jnp.stack(logits_samples), axis=0)
+        avg_logits = jnp.mean(logits_samples, axis=0)
         avg_metrics = {
-            k: jnp.mean(jnp.stack([m[k] for m in metrics_samples]))
-            for k in metrics_samples[0].keys()
+            k: jnp.mean(metrics_samples[k])
+            for k in metrics_samples.keys()
         }
         
         # Compute final loss with averaged logits
