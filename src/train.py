@@ -14,9 +14,9 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from model import VariationalMLP
-from loss import variational_loss
-from mnist_perm import create_data_loaders, convert_to_jax
+from .model import VariationalMLP
+from .loss import variational_loss
+from .mnist_perm import create_data_loaders, convert_to_jax
 
 class TrainState(train_state.TrainState):
     """Training state for the variational model."""
