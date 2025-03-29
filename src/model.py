@@ -7,17 +7,19 @@ class VariationalDense(nn.Module):
     """A variational dense layer that maintains mean and variance for weights and biases."""
     features_in: int
     features_out: int
-    kernel_init: callable = nn.initializers.normal(1)
-    bias_init: callable = nn.initializers.normal(1)
+    kernel_init: callable = nn.initializers.zeros
+    bias_init: callable = nn.initializers.zeros
 
     def setup(self):
         # Initialize mean and variance for weights
         self.weights_mu = self.param('weights_mu', self.kernel_init, (self.features_in, self.features_out))
         self.weights_var = self.param('weights_var', self.kernel_init, (self.features_in, self.features_out))
+        self.weights_var = self.weights_var - 8
         
         # Initialize mean and variance for bias
         self.bias_mu = self.param('bias_mu', self.bias_init, (self.features_out,))
         self.bias_var = self.param('bias_var', self.bias_init, (self.features_out,))
+        self.bias_var = self.bias_var - 8
 
     def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Forward pass with reparameterization trick."""      
@@ -29,7 +31,6 @@ class VariationalDense(nn.Module):
         weights = self.weights_mu + jnp.sqrt(jnp.exp(self.weights_var)) * weights_eps
         bias = self.bias_mu + jnp.sqrt(jnp.exp(self.bias_var)) * bias_eps
         
-        # Proper matrix multiplication for batched inputs
         return jnp.matmul(x, weights) + bias
 
 class VariationalMLP(nn.Module):
@@ -56,8 +57,8 @@ class VariationalMLP(nn.Module):
         # Output layer
         x = VariationalDense(self.hidden_dims[1], self.num_classes)(x, rng_third)
         
-        # Softmax output
-        return nn.softmax(x)
+        #x = nn.softmax(x)
+        return x
 
     def get_params(self) -> dict:
         """Get all parameters of the model."""

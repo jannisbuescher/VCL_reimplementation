@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 from typing import Dict, Tuple
 
+import optax
+
 def gaussian_kl_divergence(
     mu_q: jnp.ndarray,
     sigma_q: jnp.ndarray,
@@ -14,7 +16,7 @@ def gaussian_kl_divergence(
     """
     return 0.5 * jnp.sum(
         sigma_q / sigma_p +
-        (mu_p - mu_q) ** 2 / sigma_p -
+        jnp.square(mu_p - mu_q) / sigma_p -
         1 +
         jnp.log(sigma_p / sigma_q)
     )
@@ -47,7 +49,7 @@ def variational_loss(
         metrics: Dictionary containing individual loss components
     """
     # Compute cross entropy loss (negative log likelihood)
-    nll = cross_entropy_loss(logits, labels)
+    nll = jnp.sum(optax.softmax_cross_entropy(logits, jax.nn.one_hot(labels, 10))) #cross_entropy_loss(logits, labels)
     
     # Compute KL divergence for each layer
     kl_div = 0.0

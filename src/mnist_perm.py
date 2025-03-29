@@ -12,6 +12,30 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
+class NormalMNIST(Dataset):
+    """Dataset class for normal MNIST."""
+    def __init__(
+        self,
+        root: str = './data',
+        train: bool = True,
+        download: bool = True
+    ):
+        self.mnist = torchvision.datasets.MNIST(
+            root=root,
+            train=train,
+            download=download,
+            transform=torchvision.transforms.ToTensor()
+        )
+
+    def __len__(self) -> int:
+        return len(self.mnist)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        image, label = self.mnist[idx]
+        return image.view(-1), label
+
+
+
 class PermutedMNIST(Dataset):
     """Dataset class for permuted MNIST."""
     def __init__(
@@ -19,6 +43,7 @@ class PermutedMNIST(Dataset):
         root: str = './data',
         train: bool = True,
         permutation: Optional[np.ndarray] = None,
+        use_permutation: bool = True,
         download: bool = True
     ):
         """
@@ -38,10 +63,13 @@ class PermutedMNIST(Dataset):
         )
         
         # Generate random permutation if none provided
-        if permutation is None:
-            self.permutation = np.random.permutation(784)  # 28x28 = 784
+        if use_permutation:
+            if permutation is None:
+                self.permutation = np.random.permutation(28*28)
+            else:
+                self.permutation = permutation
         else:
-            self.permutation = permutation
+            self.permutation = np.arange(28*28)
             
     def __len__(self) -> int:
         return len(self.mnist)
@@ -73,8 +101,39 @@ def create_data_loaders(
         List of tuples containing (train_loader, test_loader) for each task
     """
     data_loaders = []
-    
-    for task_id in range(num_tasks):
+
+    transform_mnist = torchvision.transforms.Compose([
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Lambda(lambda x: x.view(-1))
+    ])
+
+    train_dataset_normal = torchvision.datasets.MNIST(
+        root=root,
+        train=True,
+        transform=transform_mnist
+    )
+    test_dataset_normal = torchvision.datasets.MNIST(
+        root=root,
+        train=False,
+        transform=transform_mnist
+    )
+
+    train_loader_normal = DataLoader(
+        train_dataset_normal,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
+    test_loader_normal = DataLoader(
+        test_dataset_normal,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    data_loaders.append((train_loader_normal, test_loader_normal))
+
+    for task_id in range(num_tasks - 1):
         # Generate a new permutation for each task
         permutation = np.random.permutation(784)
         
@@ -82,27 +141,28 @@ def create_data_loaders(
         train_dataset = PermutedMNIST(
             root=root,
             train=True,
-            permutation=permutation
+            permutation=permutation,
+            use_permutation=True
         )
         test_dataset = PermutedMNIST(
             root=root,
             train=False,
-            permutation=permutation
+            permutation=permutation,
+            use_permutation=True
         )
         
-        # Create data loaders with reduced number of workers
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0,  # Disable multiprocessing for data loading
+            num_workers=0,
             pin_memory=True
         )
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=0,  # Disable multiprocessing for data loading
+            num_workers=0,
             pin_memory=True
         )
         
@@ -123,4 +183,4 @@ def convert_to_jax(batch: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[jnp.ndarra
     images, labels = batch
     images = jnp.array(images.numpy())
     labels = jnp.array(labels.numpy())
-    return images, labels 
+    return images, labels
