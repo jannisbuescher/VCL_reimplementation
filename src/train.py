@@ -14,9 +14,9 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from model import VariationalMLP
-from loss import variational_loss
-from mnist_perm import create_data_loaders, convert_to_jax
+from .model import VariationalMLP
+from .loss import variational_loss
+from .mnist_perm import create_data_loaders, convert_to_jax
 
 class TrainState(train_state.TrainState):
     """Training state for the variational model."""
@@ -41,76 +41,46 @@ def create_train_state(
         rng=rng
     )
 
-@partial(jax.jit, static_argnums=(2,))
+@partial(jax.jit, static_argnums=(3,))
 def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
-    num_samples: int = 10  # Samples for Monte Carlo estimation
+    rng: jax.random.PRNGKey,
+    num_samples: int = 10  # Samples for Monte Carlo estimation,
 ) -> Tuple[TrainState, Dict]:
     """Single training step with Monte Carlo estimation."""
     images, labels = batch
     
-    def loss_fn(params):
-        def sample_step(i, state_tuple):
-            logits_samples, metrics_samples, total_loss = state_tuple
-            
-            # Generate new RNG key for each sample
-            rng = jax.random.PRNGKey(i)  # Use simple key instead of fold_in
+    def loss_fn(params, rng):        
+        def sample_step(rng, state):
             logits = state.apply_fn({'params': params}, images, rng)
-            
-            # Compute loss for each sample
             loss, metrics = variational_loss(
                 params=params,
                 prior_params=state.prior_params,
                 logits=logits,
                 labels=labels,
-            )
-            
-            # Update samples
-            logits_samples = logits_samples.at[i].set(logits)
-            metrics_samples = {k: metrics_samples[k].at[i].set(metrics[k]) 
-                             for k in metrics_samples.keys()}
-            
-            return (logits_samples, metrics_samples, total_loss + loss)
+            )            
+            return (logits, metrics, loss)
         
-        # Initialize arrays for samples
-        init_state = (
-            jnp.zeros((num_samples, images.shape[0], 10)),  # logits_samples
-            {  # metrics_samples
-                'nll': jnp.zeros(num_samples),
-                'kl_div': jnp.zeros(num_samples),
-                'total_loss': jnp.zeros(num_samples)
-            },
-            0  # total_loss
-        )
+        # Monte Carlo sampling
+        rngs = jax.random.split(rng, num_samples+1)
+        rng = rngs[0]
+        subrng = rngs[1:]
+        _, metrics, loss = jax.vmap(sample_step, in_axes=(0, None))(subrng, state)
         
-        # Run Monte Carlo sampling
-        logits_samples, metrics_samples, total_loss = jax.lax.fori_loop(
-            lower=0,
-            upper=num_samples,
-            body_fun=sample_step,
-            init_val=init_state
-        )
-
-
-        # Average metrics across samples
-        avg_metrics = {
-            k: jnp.mean(metrics_samples[k])
-            for k in metrics_samples.keys()
-        }
-        
-        return total_loss, avg_metrics
+        return jnp.mean(loss), (metrics, rng)
     
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (_, metrics), grads = grad_fn(state.params)
+    (_, (metrics, rng)), grads = grad_fn(state.params, rng)
     
     state = state.apply_gradients(grads=grads)
     return state, metrics
 
-@partial(jax.jit, static_argnums=(2,))
+@partial(jax.jit, static_argnums=(3,))
 def evaluate(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
+    rng: jax.random.PRNGKey,
     num_samples: int = 10
 ) -> Dict:
     """Evaluate the model on test data."""
@@ -120,14 +90,14 @@ def evaluate(
     
     images, labels = batch
 
-    def logit_sample_step(state, i):
-        rng = jax.random.PRNGKey(i)
+    def logit_sample_step(rng, state):
         logits = state.apply_fn({'params': state.params}, images, rng)
-        return (state, logits)
+        return logits
     
-    # _, logits_samples = jax.lax.scan(logit_sample_step, state, jnp.arange(1), length=1)
-    _, logits_samples = logit_sample_step(state, 0)
-    logits_samples = jnp.expand_dims(logits_samples, axis=0)
+    subkeys = jax.random.split(rng, num_samples + 1)
+    rng = subkeys[0]
+    subkeys = subkeys[1:]
+    logits_samples = jax.vmap(logit_sample_step, in_axes=(0,None))(subkeys, state)
 
     # jax.debug.callback(lambda x: print(f"Logits: {x[0, :2, :]}"), logits_samples)
 
@@ -166,7 +136,8 @@ def train_continual(
     )
     
     # Initialize training state
-    state = create_train_state(model, learning_rate, rng)
+    rng, subrng = jax.random.split(rng)
+    state = create_train_state(model, learning_rate, subrng)
     
     # Train on each task
     for task_id, (train_loader, test_loader) in enumerate(data_loaders):
@@ -174,54 +145,13 @@ def train_continual(
         
         for epoch in range(num_epochs):
             
-
-            # Evaluation loop
-            metrics_list = []
-            # Evaluate on test set
-            for batch in test_loader:
-
-                # if len(metrics_list) == 0:
-                #     batch1 = convert_to_jax(batch)
-                #     # get random number
-
-                #     debug_predict(state, batch1[0][3], batch1[1][3])
-
-                metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), num_samples)
-                metrics_list.append(metrics_eval)
-
-                # Average metrics
-            avg_metrics = {
-                k: jnp.mean(jnp.array([m[k] for m in metrics_list]))
-                for k in metrics_list[0].keys()
-            }
-            avg_metrics['accuracy'] = correct / total
-            eval_test_acc = avg_metrics['accuracy']
-            eval_test_loss = avg_metrics['total_loss']
-            del avg_metrics
-
-            metrics_list_train = []
-            # Evaluate on test set
-            for batch in train_loader:
-                metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), num_samples)
-                metrics_list_train.append(metrics_eval)
-
-                # Average metrics
-            avg_metrics_train = {
-                k: jnp.mean(jnp.array([m[k] for m in metrics_list_train]))
-                for k in metrics_list_train[0].keys()
-            }
-            avg_metrics_train['accuracy'] = correct / total
-            eval_loss_train = avg_metrics_train['total_loss']
-            eval_train_acc = avg_metrics_train['accuracy']
-            del avg_metrics_train
-
-
-
             # Training loop
             metrics_list = []
             for batch in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}'):
                 batch = convert_to_jax(batch)
-                state, metrics = train_step(state, batch, num_samples)
+
+                rng, subrng = jax.random.split(rng)
+                state, metrics = train_step(state, batch, subrng, num_samples)
                 metrics_list.append(metrics)
             
             # Average training metrics
@@ -233,9 +163,60 @@ def train_continual(
             del avg_metrics
 
 
-
             # Print metrics every x epochs
             if (epoch + 1) % 1 == 0:
+
+                # Evaluation loop Test set
+                metrics_list = []
+                big_correct = 0
+                big_total = 0
+                # Evaluate on test set
+                for batch in test_loader:
+
+                    # if len(metrics_list) == 0:
+                    #     batch1 = convert_to_jax(batch)
+                    #     # get random number
+
+                    #     debug_predict(state, batch1[0][3], batch1[1][3])
+                    
+                    rng, subrng = jax.random.split(rng)
+                    metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+                    metrics_list.append(metrics_eval)
+                    big_correct += correct
+                    big_total += total
+
+                    # Average metrics
+                avg_metrics = {
+                    k: jnp.mean(jnp.array([m[k] for m in metrics_list]))
+                    for k in metrics_list[0].keys()
+                }
+                eval_test_acc = big_correct / big_total
+                eval_test_loss = avg_metrics['total_loss']
+                del avg_metrics, big_correct, big_total
+
+
+                # Evaluation loop Train set
+                metrics_list_train = []
+                big_correct = 0
+                big_total = 0
+                # Evaluate on test set
+                for batch in train_loader:
+                    rng, subrng = jax.random.split(rng)
+                    metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+                    metrics_list_train.append(metrics_eval)
+                    big_correct += correct
+                    big_total += total
+
+                    # Average metrics
+                avg_metrics_train = {
+                    k: jnp.mean(jnp.array([m[k] for m in metrics_list_train]))
+                    for k in metrics_list_train[0].keys()
+                }
+                eval_loss_train =  avg_metrics_train['total_loss']
+                eval_train_acc = big_correct / big_total
+                del avg_metrics_train, big_correct, big_total
+
+
                 print(f"\nEpoch {epoch + 1}")
                 print(f"Train Loss: {train_loss_train:.4f}")
                 print(f"Train Loss eval: {eval_loss_train:.4f}")
@@ -248,17 +229,23 @@ def train_continual(
 
     for task_id, (_, test_loader) in enumerate(data_loaders):
         print(f"\nTesting on Task {task_id + 1}/{num_tasks}")
+        metrics_list = []
+        big_correct = 0
+        big_total = 0
+
         for batch in test_loader:
-            metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), num_samples)
+            rng, subrng = jax.random.split(rng)
+            metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
             metrics_list.append(metrics_eval)
+            big_correct += correct
+            big_total += total
             
-            # Average metrics
-            avg_metrics = {
-                k: jnp.mean(jnp.array([m[k] for m in metrics_list]))
-                for k in metrics_list[0].keys()
-            }
-            avg_metrics['accuracy'] = correct / total
-            eval_test_acc = avg_metrics['accuracy']
+        # Average metrics
+        avg_metrics = {
+            k: jnp.mean(jnp.array([m[k] for m in metrics_list]))
+            for k in metrics_list[0].keys()
+        }
+        eval_test_acc = big_correct / big_total
         print(f"Test Accuracy: {eval_test_acc:.4f}")
             
     
@@ -319,7 +306,7 @@ if __name__ == "__main__":
     state = train_continual(
         model=model,
         num_tasks=5,
-        num_epochs=2,
+        num_epochs=5,
         batch_size=128,
         learning_rate=0.001,
         num_samples=10,

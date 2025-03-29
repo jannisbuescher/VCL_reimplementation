@@ -14,12 +14,12 @@ class VariationalDense(nn.Module):
         # Initialize mean and variance for weights
         self.weights_mu = self.param('weights_mu', self.kernel_init, (self.features_in, self.features_out))
         self.weights_var = self.param('weights_var', self.kernel_init, (self.features_in, self.features_out))
-        self.weights_var = self.weights_var - 8
+        self.weights_var = self.weights_var - 5
         
         # Initialize mean and variance for bias
         self.bias_mu = self.param('bias_mu', self.bias_init, (self.features_out,))
         self.bias_var = self.param('bias_var', self.bias_init, (self.features_out,))
-        self.bias_var = self.bias_var - 8
+        self.bias_var = self.bias_var - 5
 
     def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Forward pass with reparameterization trick."""      

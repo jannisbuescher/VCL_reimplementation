@@ -110,11 +110,13 @@ def create_data_loaders(
     train_dataset_normal = torchvision.datasets.MNIST(
         root=root,
         train=True,
+        download=True,
         transform=transform_mnist
     )
     test_dataset_normal = torchvision.datasets.MNIST(
         root=root,
         train=False,
+        download=True,
         transform=transform_mnist
     )
 
@@ -122,13 +124,13 @@ def create_data_loaders(
         train_dataset_normal,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=2,
     )
     test_loader_normal = DataLoader(
         test_dataset_normal,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=2,
     )
 
     data_loaders.append((train_loader_normal, test_loader_normal))
@@ -155,14 +157,14 @@ def create_data_loaders(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=2,
             pin_memory=True
         )
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=2,
             pin_memory=True
         )
         
