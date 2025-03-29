@@ -119,6 +119,22 @@ def evaluate(
     metrics_list.append(metrics)  
     return metrics, correct, total
 
+
+def eval_task(dataloader, state, rng, num_samples, verbose=False):
+    big_correct = 0
+    big_total = 0
+
+    for batch in dataloader:
+        rng, subrng = jax.random.split(rng)
+        _, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+        big_correct += correct
+        big_total += total
+        
+    eval_test_acc = big_correct / big_total
+    if verbose:
+        print(f"Test Accuracy: {eval_test_acc:.4f}")
+    return rng, eval_test_acc
+
 def train_continual(
     model: VariationalMLP,
     num_tasks: int = 5,
@@ -134,6 +150,8 @@ def train_continual(
         batch_size=batch_size,
         num_tasks=num_tasks,
     )
+
+    avg_accuracies = []
     
     # Initialize training state
     rng, subrng = jax.random.split(rng)
@@ -164,7 +182,7 @@ def train_continual(
 
 
             # Print metrics every x epochs
-            if (epoch + 1) % 1 == 0:
+            if (epoch + 1) % 20 == 0:
 
                 # Evaluation loop Test set
                 metrics_list = []
@@ -227,29 +245,20 @@ def train_continual(
         # Update prior parameters with current posterior
         state = state.replace(prior_params=state.params)
 
+        avg_acc = 0
+        for task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
+            print(f"\nTesting on Task {task_id + 1}/{task_id+1}")
+            rng, acc = eval_task(test_loader, state, rng, num_samples, verbose=True)
+            avg_acc += acc
+        avg_acc /= task_id+1
+        avg_accuracies.append(avg_acc)
+
     for task_id, (_, test_loader) in enumerate(data_loaders):
         print(f"\nTesting on Task {task_id + 1}/{num_tasks}")
-        metrics_list = []
-        big_correct = 0
-        big_total = 0
-
-        for batch in test_loader:
-            rng, subrng = jax.random.split(rng)
-            metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
-            metrics_list.append(metrics_eval)
-            big_correct += correct
-            big_total += total
-            
-        # Average metrics
-        avg_metrics = {
-            k: jnp.mean(jnp.array([m[k] for m in metrics_list]))
-            for k in metrics_list[0].keys()
-        }
-        eval_test_acc = big_correct / big_total
-        print(f"Test Accuracy: {eval_test_acc:.4f}")
+        eval_task(test_loader, state, rng, num_samples, verbose=True)
             
     
-    return state
+    return state, avg_accuracies
 
 def debug_predict(
     state: TrainState,
@@ -303,14 +312,14 @@ if __name__ == "__main__":
     
     # Create and train model
     model = VariationalMLP()
-    state = train_continual(
+    state, avg_accuracies = train_continual(
         model=model,
-        num_tasks=5,
-        num_epochs=5,
-        batch_size=128,
+        num_tasks=3,
+        num_epochs=10,
+        batch_size=256,
         learning_rate=0.001,
         num_samples=10,
         rng=rng
     )
 
-    
+    print(f"Average accuracies: {avg_accuracies}")

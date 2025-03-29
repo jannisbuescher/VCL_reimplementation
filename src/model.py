@@ -11,15 +11,17 @@ class VariationalDense(nn.Module):
     bias_init: callable = nn.initializers.zeros
 
     def setup(self):
+        ten_6 = jnp.log(1e-6)
+        # jax.debug.callback(lambda x: print(x), ten_6)
         # Initialize mean and variance for weights
         self.weights_mu = self.param('weights_mu', self.kernel_init, (self.features_in, self.features_out))
         self.weights_var = self.param('weights_var', self.kernel_init, (self.features_in, self.features_out))
-        self.weights_var = self.weights_var - 5
+        self.weights_var = self.weights_var + ten_6
         
         # Initialize mean and variance for bias
         self.bias_mu = self.param('bias_mu', self.bias_init, (self.features_out,))
         self.bias_var = self.param('bias_var', self.bias_init, (self.features_out,))
-        self.bias_var = self.bias_var - 5
+        self.bias_var = self.bias_var + ten_6
 
     def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Forward pass with reparameterization trick."""      
