@@ -4,21 +4,39 @@ from typing import Dict, Tuple
 
 import optax
 
+from functools import partial
+
 def gaussian_kl_divergence(
     mu_q: jnp.ndarray,
-    sigma_q: jnp.ndarray,
+    log_sigma_q: jnp.ndarray,
     mu_p: jnp.ndarray,
-    sigma_p: jnp.ndarray
+    log_sigma_p: jnp.ndarray
 ) -> jnp.ndarray:
     """
     Compute KL divergence between two Gaussian distributions.
-    KL(q||p) = 1/2 * sum(sigma_q^2/sigma_p^2 + (mu_p - mu_q)^2/sigma_p^2 - 1 + log(sigma_p^2/sigma_q^2))
+
     """
+
+    # var_q = jnp.exp(log_sigma_q)
+    # var_p = jnp.exp(log_sigma_p)
+    # mu_diff_squared = jnp.square(mu_q - mu_p)
+    # quot_term = var_q / var_p
+    # log_diff_term = (log_sigma_p - log_sigma_q)
+    # kl = quot_term 
+    # kl = kl + (mu_diff_squared / var_p)
+    # kl = kl - 1
+    # kl = kl + log_diff_term
+    # kl = 0.5 * jnp.sum(kl)
+    
+    # return kl
+
+    sigma_q = jnp.exp(log_sigma_q)
+    sigma_p = jnp.exp(log_sigma_p)
     return 0.5 * jnp.sum(
-        sigma_q / sigma_p +
-        jnp.square(mu_p - mu_q) / sigma_p -
+        (sigma_q / sigma_p) +
+        (jnp.square(mu_p - mu_q) / sigma_p) -
         1 +
-        jnp.log(sigma_p / sigma_q)
+        (log_sigma_p - log_sigma_q)
     )
 
 def cross_entropy_loss(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
@@ -32,7 +50,9 @@ def variational_loss(
     params: Dict,
     prior_params: Dict,
     logits: jnp.ndarray,
-    labels: jnp.ndarray
+    labels: jnp.ndarray,
+    kl_weight: float = 1e-6,
+    compute_all_kl: bool = True
 ) -> Tuple[jnp.ndarray, Dict]:
     """
     Compute the variational loss: negative log likelihood + KL divergence.
@@ -54,25 +74,24 @@ def variational_loss(
     # Compute KL divergence for each layer
     kl_div = 0.0
     for layer_name in params.keys():
-        if 'Dense' in layer_name:
+        if compute_all_kl or 'Dense' in layer_name:
             # Compute KL for weights
             kl_div += gaussian_kl_divergence(
-                mu_q=params[layer_name]['weights_mu'],
-                sigma_q=jnp.exp(params[layer_name]['weights_var']),
-                mu_p=prior_params[layer_name]['weights_mu'],
-                sigma_p=jnp.exp(prior_params[layer_name]['weights_var'])
+                mu_q=jnp.ravel(params[layer_name]['weights_mu']),
+                log_sigma_q=jnp.ravel(params[layer_name]['weights_var']),
+                mu_p=jnp.ravel(prior_params[layer_name]['weights_mu']),
+                log_sigma_p=jnp.ravel(prior_params[layer_name]['weights_var'])
             )
             
             # Compute KL for biases
             kl_div += gaussian_kl_divergence(
-                mu_q=params[layer_name]['bias_mu'],
-                sigma_q=jnp.exp(params[layer_name]['bias_var']),
-                mu_p=prior_params[layer_name]['bias_mu'],
-                sigma_p=jnp.exp(prior_params[layer_name]['bias_var'])
+                mu_q=jnp.ravel(params[layer_name]['bias_mu']),
+                log_sigma_q=jnp.ravel(params[layer_name]['bias_var']),
+                mu_p=jnp.ravel(prior_params[layer_name]['bias_mu']),
+                log_sigma_p=jnp.ravel(prior_params[layer_name]['bias_var'])
             )
     
-    # Total loss is NLL + KL divergence
-    total_loss = nll + kl_div
+    total_loss = nll + kl_weight*kl_div
     
     metrics = {
         'nll': nll,

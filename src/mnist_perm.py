@@ -43,7 +43,6 @@ class PermutedMNIST(Dataset):
         root: str = './data',
         train: bool = True,
         permutation: Optional[np.ndarray] = None,
-        use_permutation: bool = True,
         download: bool = True
     ):
         """
@@ -63,13 +62,10 @@ class PermutedMNIST(Dataset):
         )
         
         # Generate random permutation if none provided
-        if use_permutation:
-            if permutation is None:
-                self.permutation = np.random.permutation(28*28)
-            else:
-                self.permutation = permutation
+        if permutation is None:
+            self.permutation = np.random.permutation(28*28)
         else:
-            self.permutation = np.arange(28*28)
+            self.permutation = permutation
             
     def __len__(self) -> int:
         return len(self.mnist)
@@ -143,14 +139,12 @@ def create_data_loaders(
         train_dataset = PermutedMNIST(
             root=root,
             train=True,
-            permutation=permutation,
-            use_permutation=True
+            permutation=permutation
         )
         test_dataset = PermutedMNIST(
             root=root,
             train=False,
-            permutation=permutation,
-            use_permutation=True
+            permutation=permutation
         )
         
         train_loader = DataLoader(

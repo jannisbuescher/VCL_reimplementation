@@ -21,7 +21,7 @@ from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
 from . import utils
 
 # CONSTANTS
-DEBUG = True
+DEBUG = __name__ == "__main__"
 
 if DEBUG:
     PRINT_EVERY = 1
@@ -66,12 +66,14 @@ def copy_train_state(train_state: TrainState, lr: float = 0.0005) -> TrainState:
     )
 
 
-@partial(jax.jit, static_argnums=(3,))
+@partial(jax.jit, static_argnums=(3,5))
 def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     rng: jax.random.PRNGKey,
     num_samples: int = 10, # Samples for Monte Carlo estimation,
+    kl_weight: float = 1e-6,
+    compute_all_kl: bool = True
 ) -> Tuple[TrainState, Dict]:
     """Single training step with Monte Carlo estimation."""
     images, labels = batch
@@ -84,6 +86,8 @@ def train_step(
                 prior_params=state.prior_params,
                 logits=logits,
                 labels=labels,
+                kl_weight=kl_weight,
+                compute_all_kl=compute_all_kl
             )            
             return (logits, metrics, loss)
         
@@ -200,16 +204,21 @@ def train_continual(
 
         if multi_head:
             state = state.replace(curr_head=task_id)
+
+        if task_id == 0:
+            kl_weight = 0 # first task just learn, no prior
+        else:
+            kl_weight = 1 /(batch_size * len(train_loader)) # kl weight 1 is way too high 
         
         for epoch in range(num_epochs):
             
-            # Training loop
+            # # Training loop
             metrics_list = []
             for batch in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}'):
                 batch = utils.convert_to_jax(batch)
 
                 rng, subrng = jax.random.split(rng)
-                state, metrics = train_step(state, batch, subrng, num_samples)
+                state, metrics = train_step(state, batch, subrng, num_samples, kl_weight, not multi_head)
                 metrics_list.append(metrics)
             
             # Average training metrics
@@ -218,6 +227,8 @@ def train_continual(
                 for k in metrics_list[0].keys()
             }
             train_loss_train = avg_metrics['total_loss']
+            train_nll_train = avg_metrics['nll']
+            train_kl_train = avg_metrics['kl_div']
             del avg_metrics
 
 
@@ -271,6 +282,8 @@ def train_continual(
 
                 print(f"\nEpoch {epoch + 1}")
                 print(f"Train Loss: {train_loss_train:.4f}")
+                print(f"Train NLL: {train_nll_train:.4f}")
+                print(f"Train KL: {train_kl_train:.4f}")
                 print(f"Train Loss eval: {eval_loss_train:.4f}")
                 print(f"Test Loss eval: {eval_test_loss:.4f}")
                 print(f"Train Accuracy: {eval_train_acc:.4f}")
@@ -393,12 +406,12 @@ if __name__ == "__main__":
         model=model,
         task='mnist_perm',
         num_tasks=3,
-        num_epochs=2,
+        num_epochs=3,
         num_coreset_epochs=1,
         batch_size=256,
         learning_rate=0.001,
         num_samples=10,
-        use_coreset=True,
+        use_coreset=False,
         rng=rng
     )
 
