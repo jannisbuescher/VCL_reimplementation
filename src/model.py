@@ -7,18 +7,20 @@ class VariationalDense(nn.Module):
     """A variational dense layer that maintains mean and variance for weights and biases."""
     features_in: int
     features_out: int
-    mu_init: callable = nn.initializers.zeros
-    var_init: callable = nn.initializers.constant(jnp.log(1e-6))
+    mu_init: callable = nn.initializers.normal(stddev=0.1)
+    var_init: callable = nn.initializers.normal(stddev=0.1)  # Initialize log variance to -3.0
 
     def setup(self):
         # jax.debug.callback(lambda x: print(x), ten_6)
         # Initialize mean and variance for weights
         self.weights_mu = self.param('weights_mu', self.mu_init, (self.features_in, self.features_out))
         self.weights_var = self.param('weights_var', self.var_init, (self.features_in, self.features_out))
+        self.weights_var = self.weights_var - 3.0
         
         # Initialize mean and variance for bias
         self.bias_mu = self.param('bias_mu', self.mu_init, (self.features_out,))
         self.bias_var = self.param('bias_var', self.var_init, (self.features_out,))
+        self.bias_var = self.bias_var - 3.0
 
     def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Forward pass with reparameterization trick."""      
@@ -27,8 +29,8 @@ class VariationalDense(nn.Module):
         weights_eps = jax.random.normal(rng_weights, shape=self.weights_mu.shape)
         bias_eps = jax.random.normal(rng_bias, shape=self.bias_mu.shape)
         
-        weights = self.weights_mu + jnp.exp(0.5 * self.weights_var) * weights_eps
-        bias = self.bias_mu + jnp.exp(0.5 * self.bias_var) * bias_eps
+        weights = self.weights_mu + jnp.log1p(jnp.exp(self.weights_var)) * weights_eps
+        bias = self.bias_mu + jnp.log1p(jnp.exp(self.bias_var)) * bias_eps
         
         return jnp.matmul(x, weights) + bias
 

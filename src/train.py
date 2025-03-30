@@ -14,11 +14,11 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from model import VariationalMLP
-from loss import variational_loss
-from mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
-from mnist_split import get_dataloaders as get_dataloaders_mnist_split
-import utils
+from .model import VariationalMLP
+from .loss import variational_loss
+from .mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
+from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
+from . import utils
 
 # CONSTANTS
 DEBUG = __name__ == "__main__"
@@ -44,6 +44,13 @@ def create_train_state(
     """Create initial training state."""
     params = model.init(rng, jnp.ones((1, 784)))['params']
     prior_params = params  # Initialize prior with same parameters
+    for key in prior_params.keys():
+        for subkey in prior_params[key].keys():
+            if 'var' in subkey:
+                prior_params[key][subkey] = jnp.ones_like(prior_params[key][subkey]) * jnp.log(1.00001)
+            elif 'mu' in subkey:
+                prior_params[key][subkey] = jnp.zeros_like(prior_params[key][subkey])
+            
     
     tx = optax.adam(learning_rate)
     # apply_fn = jax.jit(model.apply, static_argnums=(2,))
@@ -206,9 +213,9 @@ def train_continual(
             state = state.replace(curr_head=task_id)
 
         if task_id == 0:
-            kl_weight = 0 # first task just learn, no prior
+            kl_weight = 1 / (batch_size * len(train_loader)) #1e-2 / (batch_size * len(train_loader)) # first task just learn, no prior
         else:
-            kl_weight = 1 /(batch_size * len(train_loader)) # kl weight 1 is way too high 
+            kl_weight = 1 / (batch_size * len(train_loader)) # kl weight 1 is way too high 
         
         for epoch in range(num_epochs):
             
@@ -291,6 +298,8 @@ def train_continual(
         
         # Update prior parameters with current posterior
         state = state.replace(prior_params=state.params)
+        # if task_id == 0:
+        #     state = reset_vars(state)
 
 
         # train on coreset
@@ -330,6 +339,16 @@ def train_continual(
             
     
     return state, avg_accuracies
+
+def reset_vars(state: TrainState):
+    params = state.params
+    for key in params.keys():
+        for subkey in params[key].keys():
+            if 'var' in subkey:
+                params[key][subkey] = jnp.ones_like(params[key][subkey]) * jnp.log(jnp.exp(jnp.sqrt(1e-6)) - 1)
+
+    state = state.replace(params=params, prior_params=params)
+    return state
 
 def debug_predict(
     state: TrainState,

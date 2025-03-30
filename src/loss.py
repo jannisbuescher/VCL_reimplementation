@@ -12,10 +12,32 @@ def gaussian_kl_divergence(
     mu_p: jnp.ndarray,
     log_sigma_p: jnp.ndarray
 ) -> jnp.ndarray:
-    """
-    Compute KL divergence between two Gaussian distributions.
+    
+    sigma_q = jnp.square(jnp.log1p(jnp.exp(log_sigma_q)))
+    sigma_p = jnp.square(jnp.log1p(jnp.exp(log_sigma_p)))
 
-    """
+    # jax.debug.callback(
+    #     lambda x, y,z: print(x,y,z ), 
+    #     jnp.sum(jnp.log(sigma_p) - jnp.log(sigma_q)), 
+    #     jnp.sum(sigma_q), 
+    #     jnp.sum(sigma_p))
+    # jax.debug.callback(lambda x: print(x), jnp.sum(sigma_q / sigma_p))
+    # jax.debug.callback(lambda x: print(x), jnp.sum(jnp.square(mu_p - mu_q) / sigma_p))
+    # jax.debug.callback(lambda x:print(x), sigma_q.shape[0])
+
+    term1 = 0.5 * jnp.sum(jnp.log(sigma_p / sigma_q))
+    term2 = 0.5 * jnp.sum(sigma_q / sigma_p)
+    term3 = 0.5 * jnp.sum(jnp.square(mu_p - mu_q) / sigma_p)
+    term4 = -0.5 * sigma_q.shape[0]
+
+    # jax.debug.callback(lambda x,y,z,w: print(x,y,z,w), term1, term2, term3, term4)
+
+    kl = term1 + term2 + term3 + term4
+
+    # kl = 0.5 * jnp.sum(jnp.log(sigma_q) - jnp.log(sigma_p)
+    #                    + ((sigma_q + jnp.square(mu_p - mu_q)) / sigma_p)
+    #                    - 1)
+    return kl
 
     # var_q = jnp.exp(log_sigma_q)
     # var_p = jnp.exp(log_sigma_p)
@@ -32,21 +54,14 @@ def gaussian_kl_divergence(
 
 
 
-    sigma_q = jnp.exp(log_sigma_q)
-    sigma_p = jnp.exp(log_sigma_p)
-    return 0.5 * jnp.sum(
-        (sigma_q / sigma_p) +
-        (jnp.square(mu_p - mu_q) / sigma_p) -
-        1 +
-        (log_sigma_p - log_sigma_q)
-    )
-
-def cross_entropy_loss(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
-    """Compute cross entropy loss between logits and class indices."""
-    # Convert labels to one-hot encoding
-    num_classes = logits.shape[-1]
-    labels_one_hot = jax.nn.one_hot(labels, num_classes)
-    return -jnp.mean(jnp.sum(labels_one_hot * jnp.log(logits + 1e-7), axis=-1))
+    # sigma_q = jnp.exp(log_sigma_q)
+    # sigma_p = jnp.exp(log_sigma_p)
+    # return 0.5 * jnp.sum(
+    #     (sigma_q / sigma_p) +
+    #     (jnp.square(mu_p - mu_q) / sigma_p) -
+    #     1 +
+    #     (log_sigma_p - log_sigma_q)
+    # )
 
 def variational_loss(
     params: Dict,
@@ -71,7 +86,7 @@ def variational_loss(
         metrics: Dictionary containing individual loss components
     """
     # Compute cross entropy loss (negative log likelihood)
-    nll = jnp.sum(optax.softmax_cross_entropy(logits, jax.nn.one_hot(labels, 10))) #cross_entropy_loss(logits, labels)
+    nll = jnp.mean(optax.softmax_cross_entropy(logits, jax.nn.one_hot(labels, 10))) #cross_entropy_loss(logits, labels)
     
     # Compute KL divergence for each layer
     kl_div = 0.0
