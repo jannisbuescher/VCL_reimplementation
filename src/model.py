@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 class VariationalDense(nn.Module):
     """A variational dense layer that maintains mean and variance for weights and biases."""
@@ -37,11 +37,15 @@ class VariationalDense(nn.Module):
 
 class VariationalMLP(nn.Module):
     """A variational MLP with three layers and softmax output."""
-    hidden_dims: Tuple[int, int] = (100, 100)
+    hidden_dims: Tuple[int, int] = (100, 100, 100)
     num_classes: int = 10
+    num_heads: int = 5  # Number of different heads to create
 
+    def setup(self):
+        self.heads = [VariationalDense(self.hidden_dims[1], self.num_classes) for _ in range(self.num_heads)]
+    
     @nn.compact
-    def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, rng: Optional[jnp.ndarray] = None, head_id: Optional[int] = None) -> jnp.ndarray:
         """Forward pass through the variational MLP."""
         if rng is None:
             rng = jax.random.PRNGKey(0)
@@ -55,12 +59,27 @@ class VariationalMLP(nn.Module):
         # Second layer
         x = VariationalDense(self.hidden_dims[0], self.hidden_dims[1])(x, rng_second)
         x = nn.relu(x)
-        
-        # Output layer
-        x = VariationalDense(self.hidden_dims[1], self.num_classes)(x, rng_third)
-        
-        #x = nn.softmax(x)
-        return x
+
+        # Third layer
+        x = VariationalDense(self.hidden_dims[1], self.hidden_dims[2])(x, rng_third)
+        x = nn.relu(x)
+
+        # Head layer
+        def head_fn(i):
+            return lambda mdl, x, key: mdl.heads[i](x, key)
+        branches = [head_fn(i) for i in range(len(self.heads))]
+
+        # run all branches on init
+        if self.is_mutable_collection('params'):
+            for branch in branches:
+                _ = branch(self, x, rng_third)
+
+        if head_id is None:
+            head_id = 0
+
+        # Select and execute specific head
+        return nn.switch(head_id, branches, self, x, rng_third)
+
 
     def get_params(self) -> dict:
         """Get all parameters of the model."""

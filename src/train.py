@@ -16,12 +16,25 @@ if __name__ == '__main__':
 
 from .model import VariationalMLP
 from .loss import variational_loss
-from .mnist_perm import create_data_loaders, convert_to_jax
+from .mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
+from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
+from . import utils
+
+# CONSTANTS
+DEBUG = True
+
+if DEBUG:
+    PRINT_EVERY = 1
+else:
+    PRINT_EVERY = 20
+
+
 
 class TrainState(train_state.TrainState):
     """Training state for the variational model."""
     prior_params: Dict
     rng: jax.random.PRNGKey
+    curr_head: int = 0
 
 def create_train_state(
     model: VariationalMLP,
@@ -33,6 +46,7 @@ def create_train_state(
     prior_params = params  # Initialize prior with same parameters
     
     tx = optax.adam(learning_rate)
+    # apply_fn = jax.jit(model.apply, static_argnums=(2,))
     return TrainState.create(
         apply_fn=model.apply,
         params=params,
@@ -41,19 +55,30 @@ def create_train_state(
         rng=rng
     )
 
+def copy_train_state(train_state: TrainState, lr: float = 0.0005) -> TrainState:
+    return TrainState.create(
+        apply_fn=train_state.apply_fn,
+        params=train_state.params,
+        prior_params=train_state.prior_params,
+        tx=optax.adam(lr),
+        rng=train_state.rng,
+        curr_head=train_state.curr_head
+    )
+
+
 @partial(jax.jit, static_argnums=(3,))
 def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     rng: jax.random.PRNGKey,
-    num_samples: int = 10  # Samples for Monte Carlo estimation,
+    num_samples: int = 10, # Samples for Monte Carlo estimation,
 ) -> Tuple[TrainState, Dict]:
     """Single training step with Monte Carlo estimation."""
     images, labels = batch
     
     def loss_fn(params, rng):        
         def sample_step(rng, state):
-            logits = state.apply_fn({'params': params}, images, rng)
+            logits = state.apply_fn({'params': params}, images, rng, state.curr_head)
             loss, metrics = variational_loss(
                 params=params,
                 prior_params=state.prior_params,
@@ -91,7 +116,7 @@ def evaluate(
     images, labels = batch
 
     def logit_sample_step(rng, state):
-        logits = state.apply_fn({'params': state.params}, images, rng)
+        logits = state.apply_fn({'params': state.params}, images, rng, state.curr_head)
         return logits
     
     subkeys = jax.random.split(rng, num_samples + 1)
@@ -126,7 +151,7 @@ def eval_task(dataloader, state, rng, num_samples, verbose=False):
 
     for batch in dataloader:
         rng, subrng = jax.random.split(rng)
-        _, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+        _, correct, total = evaluate(state, utils.convert_to_jax(batch), subrng, num_samples)
         big_correct += correct
         big_total += total
         
@@ -137,19 +162,31 @@ def eval_task(dataloader, state, rng, num_samples, verbose=False):
 
 def train_continual(
     model: VariationalMLP,
+    task: str,
     num_tasks: int = 5,
     num_epochs: int = 10,
+    num_coreset_epochs: int = 10,
     batch_size: int = 128,
     learning_rate: float = 0.001,
     num_samples: int = 10,
+    use_coreset: bool = False,
     rng: jax.random.PRNGKey = jax.random.PRNGKey(0)
 ):
     """Train the model on multiple tasks sequentially."""
     # Create data loaders for all tasks
-    data_loaders = create_data_loaders(
+    data_loaders, nb_heads = get_dataloaders(
+        task,
         batch_size=batch_size,
         num_tasks=num_tasks,
     )
+
+    if use_coreset:
+        coreset_size = 200
+        coreset_loaders = get_coreset_loader(batch_size, data_loaders, coreset_size)
+
+
+    model.num_heads = nb_heads
+    multi_head = nb_heads > 1
 
     avg_accuracies = []
     
@@ -160,13 +197,16 @@ def train_continual(
     # Train on each task
     for task_id, (train_loader, test_loader) in enumerate(data_loaders):
         print(f"\nTraining on Task {task_id + 1}/{num_tasks}")
+
+        if multi_head:
+            state = state.replace(curr_head=task_id)
         
         for epoch in range(num_epochs):
             
             # Training loop
             metrics_list = []
             for batch in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}'):
-                batch = convert_to_jax(batch)
+                batch = utils.convert_to_jax(batch)
 
                 rng, subrng = jax.random.split(rng)
                 state, metrics = train_step(state, batch, subrng, num_samples)
@@ -182,7 +222,7 @@ def train_continual(
 
 
             # Print metrics every x epochs
-            if (epoch + 1) % 20 == 0:
+            if (epoch + 1) % PRINT_EVERY == 0:
 
                 # Evaluation loop Test set
                 metrics_list = []
@@ -190,15 +230,9 @@ def train_continual(
                 big_total = 0
                 # Evaluate on test set
                 for batch in test_loader:
-
-                    # if len(metrics_list) == 0:
-                    #     batch1 = convert_to_jax(batch)
-                    #     # get random number
-
-                    #     debug_predict(state, batch1[0][3], batch1[1][3])
                     
                     rng, subrng = jax.random.split(rng)
-                    metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+                    metrics_eval, correct, total = evaluate(state, utils.convert_to_jax(batch), subrng, num_samples)
                     metrics_list.append(metrics_eval)
                     big_correct += correct
                     big_total += total
@@ -220,7 +254,7 @@ def train_continual(
                 # Evaluate on test set
                 for batch in train_loader:
                     rng, subrng = jax.random.split(rng)
-                    metrics_eval, correct, total = evaluate(state, convert_to_jax(batch), subrng, num_samples)
+                    metrics_eval, correct, total = evaluate(state, utils.convert_to_jax(batch), subrng, num_samples)
                     metrics_list_train.append(metrics_eval)
                     big_correct += correct
                     big_total += total
@@ -245,15 +279,39 @@ def train_continual(
         # Update prior parameters with current posterior
         state = state.replace(prior_params=state.params)
 
+
+        # train on coreset
+        rng, subrng = jax.random.split(rng)
+        if use_coreset:
+            new_train_state = copy_train_state(state)
+            for epoch in range(num_coreset_epochs):
+                for batch in coreset_loaders[task_id]:
+                    batch = utils.convert_to_jax(batch)
+                    rng, subrng = jax.random.split(rng)
+                    new_train_state, metrics = train_step(new_train_state, batch, subrng, num_samples)
+                    metrics_list.append(metrics)
+            
+            for eval_task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
+                if multi_head:
+                    new_train_state = new_train_state.replace(curr_head=eval_task_id)
+                print(f"\nTesting on Task with upgraded model trained on coreset {eval_task_id + 1}/{task_id+1}")
+                rng, acc = eval_task(test_loader, new_train_state, rng, num_samples, verbose=True)
+                
+
+        
         avg_acc = 0
-        for task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
-            print(f"\nTesting on Task {task_id + 1}/{task_id+1}")
+        for eval_task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
+            if multi_head:
+                state = state.replace(curr_head=eval_task_id)
+            print(f"\nTesting on Task {eval_task_id + 1}/{task_id+1}")
             rng, acc = eval_task(test_loader, state, rng, num_samples, verbose=True)
             avg_acc += acc
         avg_acc /= task_id+1
         avg_accuracies.append(avg_acc)
 
     for task_id, (_, test_loader) in enumerate(data_loaders):
+        if multi_head:
+            state = state.replace(curr_head=task_id)
         print(f"\nTesting on Task {task_id + 1}/{num_tasks}")
         eval_task(test_loader, state, rng, num_samples, verbose=True)
             
@@ -278,7 +336,7 @@ def debug_predict(
     logits_samples = []
     for i in range(num_samples):
         rng = jax.random.PRNGKey(i)
-        logits = state.apply_fn({'params': state.params}, image[None], rng)
+        logits = state.apply_fn({'params': state.params}, image[None], rng, state.curr_head)
         logits_samples.append(logits)
         print(f"\nSample {i+1}:")
         print(f"Logits: {logits[0]}")
@@ -305,20 +363,42 @@ def debug_predict(
             print(f"Bias mu shape: {params['bias_mu'].shape}")
             print(f"Bias var shape: {params['bias_var'].shape}")
 
+
+def get_dataloaders(
+    task: str,
+    batch_size: int = 128,
+    num_tasks: int = 5
+):
+    if task == 'mnist_perm':
+        return get_dataloaders_mnist_perm(batch_size, num_tasks), 1
+    elif task == 'mnist_split':
+        return get_dataloaders_mnist_split(batch_size, num_tasks), num_tasks
+    
+def get_coreset_loader(
+    batch_size: int,
+    data_loaders,
+    coreset_size: int = 200
+):
+    return utils.get_coreset_dataloader(data_loaders, batch_size, coreset_size)
+
+
 if __name__ == "__main__":
     # Set random seed for reproducibility
     rng = jax.random.PRNGKey(123)
     np.random.seed(123)
-    
-    # Create and train model
+
     model = VariationalMLP()
+    # Create and train model
     state, avg_accuracies = train_continual(
         model=model,
+        task='mnist_perm',
         num_tasks=3,
-        num_epochs=10,
+        num_epochs=2,
+        num_coreset_epochs=1,
         batch_size=256,
         learning_rate=0.001,
         num_samples=10,
+        use_coreset=True,
         rng=rng
     )
 

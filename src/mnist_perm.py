@@ -171,18 +171,3 @@ def create_data_loaders(
         data_loaders.append((train_loader, test_loader))
     
     return data_loaders
-
-def convert_to_jax(batch: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Convert a PyTorch batch to JAX arrays.
-    
-    Args:
-        batch: Tuple of (images, labels) from PyTorch DataLoader
-    
-    Returns:
-        Tuple of (images, labels) as JAX arrays
-    """
-    images, labels = batch
-    images = jnp.array(images.numpy())
-    labels = jnp.array(labels.numpy())
-    return images, labels
