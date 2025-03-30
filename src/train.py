@@ -14,11 +14,11 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from .model import VariationalMLP
-from .loss import variational_loss
-from .mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
-from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
-from . import utils
+from model import VariationalMLP
+from loss import variational_loss
+from mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
+from mnist_split import get_dataloaders as get_dataloaders_mnist_split
+import utils
 
 # CONSTANTS
 DEBUG = __name__ == "__main__"

@@ -30,6 +30,8 @@ def gaussian_kl_divergence(
     
     # return kl
 
+
+
     sigma_q = jnp.exp(log_sigma_q)
     sigma_p = jnp.exp(log_sigma_p)
     return 0.5 * jnp.sum(
@@ -100,3 +102,38 @@ def variational_loss(
     }
     
     return total_loss, metrics 
+
+
+def vae_loss(x: jnp.ndarray, x_recon: jnp.ndarray, mu: jnp.ndarray, log_var: jnp.ndarray) -> jnp.ndarray:
+    """Compute VAE loss (reconstruction + KL divergence)."""
+    # Reconstruction loss (binary cross-entropy)
+    bce = -jnp.sum(x * jnp.log(x_recon + 1e-8) + (1 - x) * jnp.log(1 - x_recon + 1e-8))
+    
+    # KL divergence
+    kl_div = -0.5 * jnp.sum(1 + log_var - jnp.square(mu) - jnp.exp(log_var))
+    
+    return bce + kl_div 
+
+def variational_loss_vae(
+    params: Dict,
+    prior_params: Dict,
+    x: jnp.ndarray,
+    x_recon: jnp.ndarray,
+    mu: jnp.ndarray,
+    log_var: jnp.ndarray,
+    kl_weight: float = 1e-6
+) -> Tuple[jnp.ndarray, Dict]:
+    kl_div = 0.0
+    for layer_name in params.keys():
+        kl_div += gaussian_kl_divergence(
+            mu_q=jnp.ravel(params[layer_name]['weights_mu']),
+            log_sigma_q=jnp.ravel(params[layer_name]['weights_var']),
+            mu_p=jnp.ravel(prior_params[layer_name]['weights_mu']),
+            log_sigma_p=jnp.ravel(prior_params[layer_name]['weights_var'])
+        )
+
+    vae_loss_val = vae_loss(x, x_recon, mu, log_var)
+    total_loss = vae_loss_val + kl_weight*kl_div
+    return total_loss, {'vae_loss': vae_loss_val, 'kl_div': kl_div, 'total_loss': total_loss}
+    
+        

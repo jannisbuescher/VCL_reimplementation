@@ -34,7 +34,7 @@ class VariationalDense(nn.Module):
 
 class VariationalMLP(nn.Module):
     """A variational MLP with three layers and softmax output."""
-    hidden_dims: Tuple[int, int] = (100, 100, 100)
+    hidden_dims: Tuple[int, int] = (100, 100)
     num_classes: int = 10
     num_heads: int = 5  # Number of different heads to create
 
@@ -57,9 +57,9 @@ class VariationalMLP(nn.Module):
         x = VariationalDense(self.hidden_dims[0], self.hidden_dims[1])(x, rng_second)
         x = nn.relu(x)
 
-        # Third layer
-        x = VariationalDense(self.hidden_dims[1], self.hidden_dims[2])(x, rng_third)
-        x = nn.relu(x)
+        # # Third layer
+        # x = VariationalDense(self.hidden_dims[1], self.hidden_dims[2])(x, rng_third)
+        # x = nn.relu(x)
 
         # Head layer
         def head_fn(i):
