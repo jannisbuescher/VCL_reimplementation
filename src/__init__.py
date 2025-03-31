@@ -1,5 +1,5 @@
 from .model import VariationalMLP, VariationalDense
-from .loss import variational_loss, cross_entropy_loss, gaussian_kl_divergence
+from .loss import variational_loss, gaussian_kl_divergence
 from .mnist_perm import PermutedMNIST, create_data_loaders
 from .train import train_continual, TrainState, create_train_state, train_step, evaluate
 
@@ -9,7 +9,6 @@ __all__ = [
     "VariationalMLP",
     "VariationalDense",
     "variational_loss",
-    "cross_entropy_loss",
     "gaussian_kl_divergence",
     "PermutedMNIST",
     "create_data_loaders",

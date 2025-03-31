@@ -14,11 +14,11 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from .model import VariationalMLP
-from .loss import variational_loss
-from .mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
-from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
-from . import utils
+from model import VariationalMLP
+from loss import variational_loss
+from mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
+from mnist_split import get_dataloaders as get_dataloaders_mnist_split
+import utils
 
 # CONSTANTS
 DEBUG = __name__ == "__main__"
@@ -43,11 +43,13 @@ def create_train_state(
 ) -> TrainState:
     """Create initial training state."""
     params = model.init(rng, jnp.ones((1, 784)))['params']
-    prior_params = params  # Initialize prior with same parameters
+
+    prior_params = jax.tree.map(lambda x: x.copy(), params)
+
     for key in prior_params.keys():
         for subkey in prior_params[key].keys():
             if 'var' in subkey:
-                prior_params[key][subkey] = jnp.ones_like(prior_params[key][subkey]) * jnp.log(1.00001)
+                prior_params[key][subkey] = jnp.zeros_like(prior_params[key][subkey])
             elif 'mu' in subkey:
                 prior_params[key][subkey] = jnp.zeros_like(prior_params[key][subkey])
             
@@ -62,14 +64,22 @@ def create_train_state(
         rng=rng
     )
 
-def copy_train_state(train_state: TrainState, lr: float = 0.0005) -> TrainState:
+
+def train_state_replace(state: TrainState) -> TrainState:
+    prior_params = jax.tree.map(lambda x: x.copy(), state.params)
+    state = state.replace(prior_params=prior_params)
+    return state
+
+def train_state_replace_all(state: TrainState) -> TrainState:
+    params = jax.tree.map(lambda x: x.copy(), state.params)
+    prior_params = jax.tree.map(lambda x: x.copy(), state.params)
     return TrainState.create(
-        apply_fn=train_state.apply_fn,
-        params=train_state.params,
-        prior_params=train_state.prior_params,
-        tx=optax.adam(lr),
-        rng=train_state.rng,
-        curr_head=train_state.curr_head
+        apply_fn=state.apply_fn,
+        params=params,
+        prior_params=prior_params,
+        tx=state.tx,
+        rng=state.rng,
+        curr_head=state.curr_head
     )
 
 
@@ -265,39 +275,40 @@ def train_continual(
                 del avg_metrics, big_correct, big_total
 
 
-                # Evaluation loop Train set
-                metrics_list_train = []
-                big_correct = 0
-                big_total = 0
-                # Evaluate on test set
-                for batch in train_loader:
-                    rng, subrng = jax.random.split(rng)
-                    metrics_eval, correct, total = evaluate(state, utils.convert_to_jax(batch), subrng, num_samples)
-                    metrics_list_train.append(metrics_eval)
-                    big_correct += correct
-                    big_total += total
+                # # Evaluation loop Train set
+                # metrics_list_train = []
+                # big_correct = 0
+                # big_total = 0
+                # # Evaluate on test set
+                # for batch in train_loader:
+                #     rng, subrng = jax.random.split(rng)
+                #     metrics_eval, correct, total = evaluate(state, utils.convert_to_jax(batch), subrng, num_samples)
+                #     metrics_list_train.append(metrics_eval)
+                #     big_correct += correct
+                #     big_total += total
 
-                    # Average metrics
-                avg_metrics_train = {
-                    k: jnp.mean(jnp.array([m[k] for m in metrics_list_train]))
-                    for k in metrics_list_train[0].keys()
-                }
-                eval_loss_train =  avg_metrics_train['total_loss']
-                eval_train_acc = big_correct / big_total
-                del avg_metrics_train, big_correct, big_total
+                #     # Average metrics
+                # avg_metrics_train = {
+                #     k: jnp.mean(jnp.array([m[k] for m in metrics_list_train]))
+                #     for k in metrics_list_train[0].keys()
+                # }
+                # eval_loss_train =  avg_metrics_train['total_loss']
+                # eval_train_acc = big_correct / big_total
+                # del avg_metrics_train, big_correct, big_total
 
 
                 print(f"\nEpoch {epoch + 1}")
                 print(f"Train Loss: {train_loss_train:.4f}")
                 print(f"Train NLL: {train_nll_train:.4f}")
                 print(f"Train KL: {train_kl_train:.4f}")
-                print(f"Train Loss eval: {eval_loss_train:.4f}")
-                print(f"Test Loss eval: {eval_test_loss:.4f}")
-                print(f"Train Accuracy: {eval_train_acc:.4f}")
+                # print(f"Train Loss eval: {eval_loss_train:.4f}")
+                # print(f"Test Loss eval: {eval_test_loss:.4f}")
+                # print(f"Train Accuracy: {eval_train_acc:.4f}")
                 print(f"Test Accuracy: {eval_test_acc:.4f}")
         
         # Update prior parameters with current posterior
-        state = state.replace(prior_params=state.params)
+        print("\nUpdating prior parameters")
+        state = train_state_replace(state)
         # if task_id == 0:
         #     state = reset_vars(state)
 
@@ -305,7 +316,7 @@ def train_continual(
         # train on coreset
         rng, subrng = jax.random.split(rng)
         if use_coreset:
-            new_train_state = copy_train_state(state)
+            new_train_state = train_state_replace_all(state)
             for epoch in range(num_coreset_epochs):
                 for batch in coreset_loaders[task_id]:
                     batch = utils.convert_to_jax(batch)
@@ -425,11 +436,11 @@ if __name__ == "__main__":
         model=model,
         task='mnist_perm',
         num_tasks=3,
-        num_epochs=3,
+        num_epochs=10,
         num_coreset_epochs=1,
         batch_size=256,
         learning_rate=0.001,
-        num_samples=10,
+        num_samples=1,
         use_coreset=False,
         rng=rng
     )
