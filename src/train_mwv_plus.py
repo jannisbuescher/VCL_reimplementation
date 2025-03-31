@@ -8,16 +8,17 @@ from tqdm import tqdm
 import multiprocessing
 import os
 from functools import partial
+from torch.utils.data import DataLoader
 
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-from .model_head_minimum_working_version import VariationalMLP
-from .loss_minimum_working_version import variational_loss
-from .mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
-from .mnist_split import get_dataloaders as get_dataloaders_mnist_split
-from . import utils
+from model_head_minimum_working_version import VariationalMLP
+from loss_mwv_plus import variational_loss
+from mnist_perm import create_data_loaders as get_dataloaders_mnist_perm
+from mnist_split import get_dataloaders as get_dataloaders_mnist_split
+import utils
 
 # CONSTANTS
 DEBUG = __name__ == "__main__"
@@ -31,7 +32,6 @@ else:
 
 class TrainState(train_state.TrainState):
     prior_params: Dict
-    rng: jax.random.PRNGKey
 
 def create_train_state(
     model: VariationalMLP,
@@ -55,18 +55,22 @@ def create_train_state(
         apply_fn=model.apply,
         params=params,
         prior_params=prior_params,
-        tx=tx,
-        rng=rng
+        tx=tx
     )
 
-def train_state_replace(state: TrainState, learning_rate: float = 0.001) -> TrainState:
+def train_state_replace(state: TrainState) -> TrainState:
+    prior_params = jax.tree.map(lambda x: x.copy(), state.params)
+    state = state.replace(prior_params=prior_params)
+    return state
+
+def train_state_copy(state: TrainState) -> TrainState:
+    params = jax.tree.map(lambda x: x.copy(), state.params)
     prior_params = jax.tree.map(lambda x: x.copy(), state.params)
     return TrainState.create(
         apply_fn=state.apply_fn,
-        params=state.params,
+        params=params,
         prior_params=prior_params,
-        tx=optax.adam(learning_rate),
-        rng=state.rng
+        tx=state.tx
     )
 
 
@@ -75,7 +79,8 @@ def train_step(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     rng: jax.random.PRNGKey,
-    head_id: int = 0
+    head_id: int = 0,
+    kl_weight: float = 1e-6
 ) -> Tuple[TrainState, Dict]:
     images, labels = batch
     
@@ -89,8 +94,9 @@ def train_step(
                 prior_params=state.prior_params,
                 logits=logits,
                 labels=labels,
-                head_id=head_id
-            )            
+                head_id=head_id,
+                kl_weight=kl_weight
+            )
             return (logits, metrics, loss)
         
         rng, subrng = jax.random.split(rng)
@@ -153,11 +159,10 @@ def train_continual(
     num_epochs: int = 10,
     batch_size: int = 128,
     learning_rate: float = 0.001,
+    use_coreset: bool = False,
+    num_coreset_epochs: int = 10,
     rng: jax.random.PRNGKey = jax.random.PRNGKey(0)
 ):
-    
-    states = []
-
     """Train the model on multiple tasks sequentially."""
     # Create data loaders for all tasks
     data_loaders, nb_heads = get_dataloaders(
@@ -165,6 +170,11 @@ def train_continual(
         batch_size=batch_size,
         num_tasks=num_tasks,
     )
+
+    if use_coreset:
+        coreset_loaders = get_coreset_loader(batch_size, data_loaders)
+
+    model.num_heads = nb_heads
 
     use_multiple_heads = model.num_heads > 1
 
@@ -186,7 +196,7 @@ def train_continual(
                 batch = utils.convert_to_jax(batch)
 
                 rng, subrng = jax.random.split(rng)
-                state, (metrics, rng) = train_step(state, batch, subrng, head_id=head_id)
+                state, (metrics, rng) = train_step(state, batch, subrng, head_id=head_id, kl_weight=1/60000)
                 metrics_list.append(metrics)
             
             # Average training metrics
@@ -221,8 +231,25 @@ def train_continual(
                 print(f"Test Accuracy: {eval_test_acc:.4f}")
         
         print("\nUpdating prior parameters")
-        states.append(state)
         state = train_state_replace(state)
+
+        # fine-tune on coreset
+        rng, subrng = jax.random.split(rng)
+        if use_coreset:
+            new_train_state = train_state_copy(state)
+            for epoch in range(num_coreset_epochs):
+                for batch in coreset_loaders[task_id]:
+                    # if use_multiple_heads:
+                    #     new_train_state = new_train_state.replace(curr_head=?)
+                    batch = utils.convert_to_jax(batch)
+                    rng, subrng = jax.random.split(rng)
+                    new_train_state, _ = train_step(new_train_state, batch, subrng, kl_weight=1/(200 * (task_id+1)))
+            
+            for eval_task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
+                if use_multiple_heads:
+                    new_train_state = new_train_state.replace(curr_head=eval_task_id)
+                print(f"\nTesting on Task with upgraded model trained on coreset {eval_task_id + 1}/{task_id+1}")
+                rng, acc = eval_task(test_loader, new_train_state, rng, verbose=True)
         
         avg_acc = 0
         for eval_task_id, (_, test_loader) in enumerate(data_loaders[:task_id+1]):
@@ -244,11 +271,18 @@ def get_dataloaders(
     task: str,
     batch_size: int = 128,
     num_tasks: int = 5
-):
+) -> Tuple[List[Tuple[DataLoader, DataLoader]], int]:
     if task == 'mnist_perm':
         return get_dataloaders_mnist_perm(batch_size, num_tasks), 1
     elif task == 'mnist_split':
         return get_dataloaders_mnist_split(batch_size, num_tasks), num_tasks
+    
+def get_coreset_loader(
+    batch_size: int,
+    data_loaders,
+    coreset_size: int = 200
+) -> Tuple[DataLoader, DataLoader]:
+    return utils.get_coreset_dataloader(data_loaders, batch_size, coreset_size)
 
 
 if __name__ == "__main__":
@@ -256,15 +290,17 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(123)
     np.random.seed(123)
 
-    model = VariationalMLP(var=-12.0)
+    model = VariationalMLP(num_classes=10)
     # Create and train model
     state, avg_accuracies = train_continual(
         model=model,
         task='mnist_perm',
-        num_tasks=3,
+        num_tasks=5,
         num_epochs=10,
         batch_size=256,
         learning_rate=0.001,
+        use_coreset=True,
+        num_coreset_epochs=100,
         rng=rng
     )
 

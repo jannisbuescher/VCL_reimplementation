@@ -7,8 +7,9 @@ class VariationalDense(nn.Module):
     """A variational dense layer that maintains mean and variance for weights and biases."""
     features_in: int
     features_out: int
+    var: float = -12.0
     mu_init: callable = nn.initializers.normal(stddev=0.1)
-    var_init: callable = nn.initializers.constant(-13.0)
+    var_init: callable = nn.initializers.constant(var)
 
     def setup(self):
         self.weights_mu = self.param('weights_mu', self.mu_init, (self.features_in, self.features_out))
